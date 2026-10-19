@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+from tempfile import NamedTemporaryFile
 from unittest import TestCase
 from unittest.mock import ANY, MagicMock, Mock, call, patch
 
@@ -7,7 +9,6 @@ from osgeo import gdal, ogr
 
 from gdal_utils import (
     convert,
-    open_dataset,
     convert_raster,
     convert_vector,
     get_band_statistics,
@@ -16,6 +17,7 @@ from gdal_utils import (
     get_meta,
     is_envelope,
     merge_geotiffs,
+    open_dataset,
     polygonize,
 )
 
@@ -580,7 +582,9 @@ class TestOpenDataset(TestCase):
     @patch("gdal_utils.ogr.Open")
     @patch("gdal_utils.gdal.OpenEx")
     @patch("gdal_utils.gdal.Open")
-    def test_vector_open_never_probes_raster_drivers(self, gdal_open, gdal_open_ex, ogr_open):
+    def test_vector_open_never_probes_raster_drivers(
+        self, gdal_open, gdal_open_ex, ogr_open
+    ):
         vector = Mock(spec=ogr.DataSource)
         ogr_open.return_value = vector
 
@@ -594,19 +598,53 @@ class TestOpenDataset(TestCase):
     @patch("gdal_utils.ogr.Open")
     @patch("gdal_utils.gdal.OpenEx")
     @patch("gdal_utils.gdal.Open")
-    def test_vector_open_returns_none_when_no_vector_driver_opens_it(self, gdal_open, gdal_open_ex, ogr_open):
+    def test_vector_open_falls_back_to_raster_only_when_no_vector_driver_opens_it(
+        self, gdal_open, gdal_open_ex, ogr_open
+    ):
         ogr_open.return_value = None
+        raster = Mock(spec=gdal.Dataset)
+        gdal_open.return_value = raster
 
-        self.assertIsNone(open_dataset("/path/to/unknown.bin", is_raster=False))
-        gdal_open.assert_not_called()
+        self.assertIs(raster, open_dataset("/path/to/image.tif", is_raster=False))
+        ogr_open.assert_called_once_with("/path/to/image.tif")
+        gdal_open.assert_called_once_with("/path/to/image.tif")
+        gdal_open_ex.assert_not_called()
 
     @patch("gdal_utils.ogr.Open")
     @patch("gdal_utils.gdal.OpenEx")
     @patch("gdal_utils.gdal.Open")
-    def test_raster_open_still_probes_raster_first(self, gdal_open, gdal_open_ex, ogr_open):
+    def test_raster_open_still_probes_raster_first(
+        self, gdal_open, gdal_open_ex, ogr_open
+    ):
         raster = Mock(spec=gdal.Dataset)
         gdal_open.return_value = raster
 
         self.assertIs(raster, open_dataset("/path/to/image.tif", is_raster=True))
         gdal_open.assert_called_once_with("/path/to/image.tif")
         gdal_open_ex.assert_not_called()
+
+    def test_get_meta_reports_a_real_vector_file_as_vector(self):
+        # No mocks: a GeoJSON file through the real get_meta -> open_dataset path.
+        # Guards the return type of the vector branch: an ogr.DataSource keeps
+        # get_gdal_metadata on its vector branch (is_raster False, driver by name).
+        with NamedTemporaryFile("w", suffix=".geojson", delete=False) as handle:
+            json.dump(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {},
+                            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+                        }
+                    ],
+                },
+                handle,
+            )
+            path = handle.name
+        try:
+            meta = get_meta(path, is_raster=False)
+        finally:
+            os.remove(path)
+        self.assertIs(False, meta["is_raster"])
+        self.assertEqual("GeoJSON", meta["driver"])

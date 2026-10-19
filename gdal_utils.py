@@ -30,7 +30,9 @@ def open_dataset(file_path, is_raster):
     """
     Given a path to a raster or vector dataset, returns an opened GDAL or OGR dataset.
     The caller has the responsibility of closing/deleting the dataset when finished.
-    :param is_raster:
+    :param is_raster: True probes raster drivers first and falls back to vector drivers;
+        False opens with vector drivers (ogr.Open) first and falls back to raster drivers
+        only when no vector driver claims the path.
     :param file_path: Path to dataset
     :return: Handle to open dataset
     """
@@ -44,20 +46,19 @@ def open_dataset(file_path, is_raster):
     ogr_dataset = None
     try:
         if not is_raster:
-            # A vector source is opened with vector drivers only (ogr.Open, so the
-            # caller still gets an ogr.DataSource). The raster-first gdal.Open below
-            # hands e.g. a "PG:" connection string to the PostGIS Raster driver, which
-            # caches its Postgres connection for the life of the process -- one idle
-            # session leaked per call (polymer-v2 latent 86).
+            # A vector source is opened with vector drivers first (ogr.Open, so the
+            # caller still gets an ogr.DataSource). Probing raster drivers first on a
+            # "PG:" connection string reaches the PostGIS Raster driver, which was
+            # observed (GDAL 3.8.4, polymer-v2 latent 86) to leave its Postgres
+            # connection open for the life of the process: one idle session per call.
+            # Only when no vector driver claims the path is the raster probe tried.
             try:
                 ogr_dataset = ogr.Open(file_path)
             except Exception:
                 logger.debug("Could not open dataset using ogr.", exc_info=True)
             if ogr_dataset:
                 logger.info("The dataset: %s opened with ogr.", file_path)
-            else:
-                logger.debug("Unknown file format: %s", file_path)
-            return ogr_dataset
+                return ogr_dataset
 
         try:
             gdal_dataset = gdal.Open(file_path)
@@ -114,11 +115,9 @@ class GdalUtilsMetadata(TypedDict):
 
 def get_meta(ds_path, is_raster=True) -> GdalUtilsMetadata:
     """
-    This function is a wrapper for the get_gdal metadata because if there is a database disconnection there is no
-    obvious way to clean up and free those resources therefore it is put on a separate process and if it fails it
-    can just be tried again.
-
-    This is using GDAL 2.2.4 this should be checked again to see if it can be simplified in a later version.
+    This function is a wrapper for get_gdal_metadata. It runs the read on a worker thread
+    (multiprocessing.dummy.Process is a thread, not a process) and returns the result through a
+    queue; resources a GDAL driver keeps open are therefore NOT released when the read ends.
     :param is_raster:
     :param ds_path: String: Path to datasets if all bands have the same one, otherwise None (raster sets only)
     """
@@ -317,7 +316,8 @@ def convert(
     :param dataset_creation_options: Data options specific to vector conversion.
     :param translate_params: A dict of params to pass into gdal translate.
     :param warp_params: A dict of params to pass into gdal warp.
-    :param is_raster: A explicit declaration that dataset is raster (for disambiguating mixed mode files...gpkg)
+    :param is_raster: True (default) probes raster drivers first; False opens with vector drivers first
+        (disambiguates mixed-mode files such as gpkg, and keeps vector sources off the raster drivers)
     :param boundary: A geojson file or bbox (xmin, ymin, xmax, ymax) to serve as a cutline
     :param input_files: A raster or vector file to be clipped
     :param output_file: The dataset to put the clipped output in (if not specified will use in_dataset)
