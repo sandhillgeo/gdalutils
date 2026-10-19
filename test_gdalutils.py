@@ -581,21 +581,21 @@ class TestOpenDataset(TestCase):
     @patch("gdal_utils.gdal.OpenEx")
     @patch("gdal_utils.gdal.Open")
     def test_vector_open_never_probes_raster_drivers(self, gdal_open, gdal_open_ex, ogr_open):
-        vector = Mock(spec=gdal.Dataset)
-        gdal_open_ex.return_value = vector
+        vector = Mock(spec=ogr.DataSource)
+        ogr_open.return_value = vector
 
         returned = open_dataset("PG:dbname=exports host=db", is_raster=False)
 
         self.assertIs(vector, returned)
-        gdal_open_ex.assert_called_once_with("PG:dbname=exports host=db", gdal.OF_VECTOR)
+        ogr_open.assert_called_once_with("PG:dbname=exports host=db")
         gdal_open.assert_not_called()
-        ogr_open.assert_not_called()
+        gdal_open_ex.assert_not_called()
 
     @patch("gdal_utils.ogr.Open")
     @patch("gdal_utils.gdal.OpenEx")
     @patch("gdal_utils.gdal.Open")
     def test_vector_open_returns_none_when_no_vector_driver_opens_it(self, gdal_open, gdal_open_ex, ogr_open):
-        gdal_open_ex.return_value = None
+        ogr_open.return_value = None
 
         self.assertIsNone(open_dataset("/path/to/unknown.bin", is_raster=False))
         gdal_open.assert_not_called()
