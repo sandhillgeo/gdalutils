@@ -43,12 +43,27 @@ def open_dataset(file_path, is_raster):
     gdal_dataset = None
     ogr_dataset = None
     try:
+        if not is_raster:
+            # A vector source is opened with vector drivers only. The raster-first
+            # gdal.Open below hands e.g. a "PG:" connection string to the PostGIS
+            # Raster driver, which caches its Postgres connection for the life of
+            # the process -- one idle session leaked per call (polymer-v2 latent 86).
+            try:
+                ogr_dataset = gdal.OpenEx(file_path, gdal.OF_VECTOR)
+            except Exception:
+                logger.debug("Could not open dataset using gdal as vector.", exc_info=True)
+            if ogr_dataset:
+                logger.info("The dataset: %s opened with gdal as vector.", file_path)
+            else:
+                logger.debug("Unknown file format: %s", file_path)
+            return ogr_dataset
+
         try:
             gdal_dataset = gdal.Open(file_path)
         except Exception:
             logger.debug("Could not open dataset using gdal as raster.", exc_info=True)
 
-        if gdal_dataset and is_raster:
+        if gdal_dataset:
             logger.info("The dataset: %s opened with gdal.", file_path)
             return gdal_dataset
 

@@ -7,6 +7,7 @@ from osgeo import gdal, ogr
 
 from gdal_utils import (
     convert,
+    open_dataset,
     convert_raster,
     convert_vector,
     get_band_statistics,
@@ -568,3 +569,44 @@ class TestGdalUtils(TestCase):
             skipFailures=False,
             srcSRS=src_srs,
         )
+
+
+class TestOpenDataset(TestCase):
+    """open_dataset must honor is_raster. A raster-first gdal.Open on a vector
+    source hands e.g. ``PG:`` connection strings to GDAL's PostGIS Raster driver,
+    which caches its Postgres connection for the life of the process: one idle
+    session leaked per call (polymer-v2 latent 86 / RV-09)."""
+
+    @patch("gdal_utils.ogr.Open")
+    @patch("gdal_utils.gdal.OpenEx")
+    @patch("gdal_utils.gdal.Open")
+    def test_vector_open_never_probes_raster_drivers(self, gdal_open, gdal_open_ex, ogr_open):
+        vector = Mock(spec=gdal.Dataset)
+        gdal_open_ex.return_value = vector
+
+        returned = open_dataset("PG:dbname=exports host=db", is_raster=False)
+
+        self.assertIs(vector, returned)
+        gdal_open_ex.assert_called_once_with("PG:dbname=exports host=db", gdal.OF_VECTOR)
+        gdal_open.assert_not_called()
+        ogr_open.assert_not_called()
+
+    @patch("gdal_utils.ogr.Open")
+    @patch("gdal_utils.gdal.OpenEx")
+    @patch("gdal_utils.gdal.Open")
+    def test_vector_open_returns_none_when_no_vector_driver_opens_it(self, gdal_open, gdal_open_ex, ogr_open):
+        gdal_open_ex.return_value = None
+
+        self.assertIsNone(open_dataset("/path/to/unknown.bin", is_raster=False))
+        gdal_open.assert_not_called()
+
+    @patch("gdal_utils.ogr.Open")
+    @patch("gdal_utils.gdal.OpenEx")
+    @patch("gdal_utils.gdal.Open")
+    def test_raster_open_still_probes_raster_first(self, gdal_open, gdal_open_ex, ogr_open):
+        raster = Mock(spec=gdal.Dataset)
+        gdal_open.return_value = raster
+
+        self.assertIs(raster, open_dataset("/path/to/image.tif", is_raster=True))
+        gdal_open.assert_called_once_with("/path/to/image.tif")
+        gdal_open_ex.assert_not_called()
